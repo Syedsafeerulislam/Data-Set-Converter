@@ -28,21 +28,44 @@ def read_dataset(path: str) -> pd.DataFrame:
     if ext in {".xlsx", ".xls"}:
         return pd.read_excel(path, engine="openpyxl" if ext == ".xlsx" else None)
 
-    # CSV / TSV — try multiple encodings
-    sep = "\t" if ext == ".tsv" else None  # None = sniff
+    # CSV / TSV — aggressive reading that preserves ALL rows
+    import io as _io
+    sep = "\t" if ext == ".tsv" else None
+
+    # Strategy 1: clean encodings, warn instead of skip
     for enc in ("utf-8-sig", "utf-8", "utf-16", "cp1256", "latin1"):
         try:
             df = pd.read_csv(path, sep=sep, encoding=enc,
-                             engine="python", on_bad_lines="skip")
-            # Detect if pandas put everything in one column due to wrong sep
+                             engine="python", on_bad_lines="warn")
             if df.shape[1] == 1 and "\t" in str(df.columns[0]):
                 df = pd.read_csv(path, sep="\t", encoding=enc,
-                                 engine="python", on_bad_lines="skip")
-            return df
+                                 engine="python", on_bad_lines="warn")
+            if len(df) > 0:
+                print(f"[read_dataset] {len(df)} rows loaded with encoding={enc}")
+                return df
         except (UnicodeDecodeError, UnicodeError):
             continue
         except Exception:
             continue
+
+    # Strategy 2: force-decode bytes with replacement (NEVER drops rows)
+    try:
+        raw = Path(path).read_bytes()
+        for enc in ("utf-8", "cp1256", "latin1"):
+            try:
+                text = raw.decode(enc, errors="replace")
+                df = pd.read_csv(_io.StringIO(text), sep=sep, engine="python",
+                                 on_bad_lines="warn")
+                if df.shape[1] == 1 and "\t" in str(df.columns[0]):
+                    df = pd.read_csv(_io.StringIO(text), sep="\t", engine="python",
+                                     on_bad_lines="warn")
+                if len(df) > 0:
+                    print(f"[read_dataset] {len(df)} rows loaded via force-decode enc={enc}")
+                    return df
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     raise ValueError("Could not read file — try saving as UTF-8 CSV")
 
